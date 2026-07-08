@@ -1,0 +1,23 @@
+name: evd_transform
+version: "1.0.0"
+config-version: 2
+
+profile: evd_transform
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+
+seeds:
+  evd_transform:
+    +schema: seeds
+
+models:
+  evd_transform:
+    silver:
+      +materialized: view
+      +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold

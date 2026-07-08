@@ -1,0 +1,4 @@
+load_from:
+  - python_module:
+      module_name: evd_orchestration
+      attribute: defs

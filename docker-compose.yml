@@ -1,0 +1,49 @@
+services:
+  webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: evd-dwh:latest
+    command: >
+      dagster-webserver
+        --host 0.0.0.0
+        --port 3000
+        --workspace /app/workspace.yaml
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DAGSTER_HOME: /dagster_home
+    volumes:
+      - dagster_home:/dagster_home
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  daemon:
+    image: evd-dwh:latest
+    command: dagster-daemon run
+    env_file: .env
+    environment:
+      DAGSTER_HOME: /dagster_home
+    volumes:
+      - dagster_home:/dagster_home
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
+    restart: unless-stopped
+    depends_on:
+      webserver:
+        condition: service_healthy
+
+volumes:
+  dagster_home:
+    driver: local
+
+networks:
+  default:
+    external: true
+    name: evd-net
