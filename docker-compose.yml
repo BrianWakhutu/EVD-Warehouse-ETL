@@ -10,13 +10,15 @@ services:
         --port 3000
         --workspace /app/workspace.yaml
     ports:
-      - "3000:3000"
+      - "3001:3000"
     env_file: .env
     environment:
       DAGSTER_HOME: /dagster_home
     volumes:
       - dagster_home:/dagster_home
       - ./dagster.yaml:/dagster_home/dagster.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
@@ -34,6 +36,8 @@ services:
     volumes:
       - dagster_home:/dagster_home
       - ./dagster.yaml:/dagster_home/dagster.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     depends_on:
       webserver:

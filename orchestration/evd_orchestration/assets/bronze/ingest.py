@@ -37,7 +37,7 @@ def read_source_records(duckdb: DuckDBResource, bucket: str, key: str) -> list[d
     try:
         cursor = conn.execute(
             f"SELECT * FROM read_json_auto('s3://{bucket}/{key}', format='auto', "
-            "compression='auto')"
+            "compression='auto_detect')"
         )
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
