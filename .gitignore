@@ -1,10 +1,33 @@
+# Environment
+.env
+
+# Python
 .venv/
 __pycache__/
-*.pyc
-.dlt/secrets.toml
-.env
-*.duckdb
-.dg/
-dagster_home/
+*.py[cod]
 *.egg-info/
+dist/
+build/
+
+# uv
+uv.lock
+
+# dbt
+transform/evd_transform/target/
+transform/evd_transform/dbt_packages/
+transform/evd_transform/logs/
+transform/.user.yml
+
+# Test/lint caches
 .pytest_cache/
+.ruff_cache/
+
+# Dagster
+$DAGSTER_HOME/
+.dagster/
+.dagster_home/
+.tmp_dagster_home*/
+
+# OS
+.DS_Store
+Thumbs.db

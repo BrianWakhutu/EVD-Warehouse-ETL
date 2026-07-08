@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: bronze
+    schema: bronze
+    description: >
+      Append-only landing tables, one per sending system. Column set is
+      inferred/evolved at ingest time by the Dagster bronze assets — additions
+      here should track new `bronze.*_raw` tables as sending systems are added,
+      not new columns within an existing table.
+    tables:
+      - name: lims_raw
+        description: Raw LIMS records, flattened and staged from MinIO.

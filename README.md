@@ -1,83 +1,90 @@
-# evd_warehouse
+# EVD Warehouse ETL
 
-A [Dagster](https://docs.dagster.io/) project that turns the raw JSON landed in MinIO by [`evd-surveillance-scripts`](../EVD-Surveillance-scripts-v1) into structured, queryable data marts in Postgres — the bronze → silver → gold layer of the EVD surveillance platform. This repo is deliberately separate from the ingestion repo: MinIO is the handoff point between them, and this side only ever *reads* from MinIO, never writes to it.
+Data warehouse ETL for EVD: MinIO → Postgres (`bronze` → `silver` → `gold`).
+
+## Scope
+
+- **In scope**: MinIO → Postgres → dbt (silver/gold marts).
+- **Bronze is schema-inferred, not hand-modeled.** JSON records from each
+  sending system are flattened and staged into `bronze.{source}_raw` tables
+  whose columns are discovered from the data itself and evolve **additively**
+  (new fields → new nullable columns; existing columns/data are never altered).
+- **No Data Vault modeling.** `silver`/`gold` are plain medallion-style dbt
+  transforms — typing, dedup, joins — not hubs/links/satellites.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full design and
+[`CLAUDE.md`](CLAUDE.md) for the conventions this repo follows.
+
+## Stack
+
+| Layer         | Tool         | Notes                                                      |
+| ------------- | ------------ | ---------------------------------------------------------- |
+| Raw lake      | MinIO        | S3-compatible, bucket `evd`, one prefix per sending system |
+| Lake reader   | DuckDB       | `httpfs`, reads JSON (incl. gzip) directly from MinIO      |
+| Orchestration | Dagster      | Bronze ingestion assets + `@dbt_assets` wrapping dbt       |
+| Warehouse     | Postgres     | Schemas: `bronze`, `silver`, `gold`                        |
+| Transform     | dbt-postgres | Silver (typed/deduped) → gold (marts)                      |
+| Python deps   | uv           | Single `pyproject.toml` at root                            |
+
+## Repository layout
 
 ```
-MinIO (bronze, raw JSON)  →  Postgres: bronze  →  Postgres: silver  →  Postgres: gold  →  (future) APIs
-      evd-surveillance-scripts        this repo (typed, de-identified)   (marts)
+EVD-Warehouse-ETL/
+├── infra/postgres/          # init.sql — CREATE SCHEMA bronze/silver/gold
+├── orchestration/
+│   └── evd_orchestration/
+│       ├── resources/       # minio, duckdb_io, postgres
+│       ├── assets/
+│       │   ├── bronze/      # schema inference + generic ingest asset factory
+│       │   └── transform/   # @dbt_assets wrapping transform/evd_transform
+│       ├── jobs.py, schedules.py, sensors.py
+│       └── tools/migrate.py # runs infra/postgres/init.sql
+├── transform/
+│   └── evd_transform/       # dbt project: models/{silver,gold}
+├── scripts/infer_schema.py  # dry-run: sample MinIO, print inferred schema
+├── tests/                   # pytest — pure schema-inference logic
+└── docker-compose.yml, Makefile, pyproject.toml
 ```
 
-See [AGENTS.md](AGENTS.md) for the full rationale and conventions — read that before adding a source or a model, it's written for a future Claude session (or human) picking this up cold.
+## Local development
 
-## The three layers
-
-| Layer | Schema | What it holds | How it's built |
-| --- | --- | --- | --- |
-| Bronze | `bronze` | Raw records, copied as-is from MinIO | `dlt` — one filesystem→Postgres pipeline per source, under `src/warehouse/bronze/<source>/` |
-| Silver | `silver` | Typed, joined, **de-identified** tables | Plain SQL — one model per table, under `src/warehouse/silver/<model>/` |
-| Gold | `gold` | Data marts — the shape dashboards/APIs actually want | Plain SQL — one model per mart, under `src/warehouse/gold/<mart>/` |
-
-No dbt here — silver/gold models are plain `asset.py` + `transform.sql` pairs, each asset just executing its SQL file against Postgres. See AGENTS.md for why, and for the convention every new model should follow.
-
-`mdharura` is the reference implementation for all three layers — copy its shape (`bronze/mdharura/`, `silver/signals/`, `gold/county_signal_daily_counts/`) when adding a new source or model.
-
-## Quickstart
-
-Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python ≥ 3.10.
+Prereqs: Docker, [uv](https://docs.astral.sh/uv/), GNU make.
 
 ```bash
-git clone <this-repo> && cd evd-warehouse
-uv sync
+cp .env.example .env       # fill in MinIO + Postgres credentials
+make migrate                # create bronze/silver/gold schemas
+make explore SOURCE=lims    # sample real MinIO files, print inferred schema (no writes)
+make ingest                 # stage bronze.lims_raw from MinIO
+make dbt-deps && make dbt   # build silver + gold
 ```
 
-Start a local Postgres:
+Or run the Dagster UI locally:
 
 ```bash
-cp .env.example .env
-docker compose up -d
+make dagster-dev            # http://localhost:3000
 ```
 
-Configure MinIO read access + Postgres write access:
+Run tests:
 
 ```bash
-cp .dlt/secrets.example.toml .dlt/secrets.toml
-# edit: MinIO access key (a scoped source-specific user, e.g. mdharura-svc,
-# from the ingestion repo's MinIO setup) + endpoint_url, and the Postgres
-# password (matches .env if using the local docker-compose Postgres)
+make test
 ```
 
-Run it:
+## Adding a new sending system
 
-```bash
-dg dev                                          # Dagster UI at http://localhost:3000
-dg list defs                                    # list all assets
-dg launch --assets "mdharura_bronze"            # bronze: MinIO -> Postgres
-dg launch --assets "signals"                    # silver: type + de-identify
-dg launch --assets "county_signal_daily_counts" # gold: the first mart
-```
+Bronze ingestion is a factory, not per-source boilerplate. To add `[future]`:
 
-Verify against Postgres directly:
+1. `orchestration/evd_orchestration/assets/bronze/<future>.py`:
+   ```python
+   from .ingest import build_bronze_asset
+   bronze_<future>_raw = build_bronze_asset("<future>")
+   ```
+2. Register it in `assets/bronze/__init__.py`, `assets/__init__.py`, and
+   `jobs.py`'s `ingest_job` selection.
+3. Add `bronze.<future>_raw` as a dbt source in
+   `transform/evd_transform/models/silver/_sources.yml`.
 
-```bash
-docker exec -it evd-warehouse-postgres psql -U postgres -d evd_warehouse \
-  -c "select * from gold.county_signal_daily_counts limit 10;"
-```
-
-## Adding a new source (bronze)
-
-1. `mkdir -p src/warehouse/bronze/<source>` and copy the shape of `bronze/mdharura/assets.py` — swap the `bucket_url` for that source's MinIO prefix (matches its `dataset_name` in the ingestion repo, e.g. `s3://evd/<source>_raw/<resource>`), and the `pipeline_name`/`dataset_name`.
-2. Use that source's own scoped MinIO credentials (see the ingestion repo's multi-source MinIO setup) — never the MinIO root user, and never another source's credentials.
-3. Import the new `@dlt_assets`-decorated function in `definitions.py` and add it to the `assets` list.
-4. `dg check defs`, then `dg launch --assets "<pipeline_name>"` to verify.
-
-## Adding a new silver or gold model
-
-1. `mkdir -p src/warehouse/silver/<model>` (or `gold/<mart>`).
-2. Write `transform.sql` — a `CREATE SCHEMA IF NOT EXISTS ...` + `DROP TABLE IF EXISTS ...` + `CREATE TABLE ... AS SELECT ...`, full-rebuild style (see `silver/signals/transform.sql` for the pattern, including the PII de-identification convention — read it before writing a silver model with any potentially-identifying column).
-3. Write `asset.py` — a `@dg.asset` that reads `transform.sql` and calls `postgres.execute(SQL)`, with `deps=[...]` pointing at whatever upstream table(s) it reads.
-4. Import it in `definitions.py`, add it to the `assets` list.
-
-## Documentation
-
-- [AGENTS.md](AGENTS.md) — why this repo exists, why plain SQL instead of dbt, the PII de-identification rule, and conventions for adding sources/models. Read this first.
-- [evd-surveillance-scripts/docs](../EVD-Surveillance-scripts-v1/docs/) — the ingestion side: how sources land in MinIO, the multi-source MinIO credential/prefix scheme this repo's bronze layer depends on.
+No changes to the ingestion/schema-inference logic itself are needed — MinIO
+layout (`evd/<future>_raw/records/` → `evd/_processed_<future>_raw/records/`)
+and Postgres table (`bronze.<future>_raw`) follow the same convention as
+`lims`.

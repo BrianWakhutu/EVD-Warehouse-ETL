@@ -1,19 +1,49 @@
-# Local dev Postgres only. Not a deployment config — see docs/deployment.md
-# (once written) for how this joins the Ubuntu server's evd-net alongside
-# the ingestion repo and MinIO.
 services:
-  postgres:
-    image: postgres:16
-    container_name: evd-warehouse-postgres
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-evd_warehouse}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: evd-dwh:latest
+    command: >
+      dagster-webserver
+        --host 0.0.0.0
+        --port 3000
+        --workspace /app/workspace.yaml
     ports:
-      - "5432:5432"
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DAGSTER_HOME: /dagster_home
     volumes:
-      - warehouse_pg_data:/var/lib/postgresql/data
+      - dagster_home:/dagster_home
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  daemon:
+    image: evd-dwh:latest
+    command: dagster-daemon run
+    env_file: .env
+    environment:
+      DAGSTER_HOME: /dagster_home
+    volumes:
+      - dagster_home:/dagster_home
+      - ./dagster.yaml:/dagster_home/dagster.yaml:ro
+    restart: unless-stopped
+    depends_on:
+      webserver:
+        condition: service_healthy
 
 volumes:
-  warehouse_pg_data:
+  dagster_home:
+    driver: local
+
+networks:
+  default:
+    external: true
+    name: evd-net
