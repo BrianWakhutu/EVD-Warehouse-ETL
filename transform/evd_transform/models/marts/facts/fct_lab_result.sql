@@ -54,14 +54,14 @@ with lims_source as (
 lims_lab_results as (
 
     select
-        'LIMS'::text as source_system,
+        'LIMS'::text
+            as source_system,
 
-        id as source_row_id,
+        id
+            as source_row_id,
 
         /*
-         * Retain the source business identifier where available.
-         * The silver model already ensures one latest record per
-         * source identifier.
+         * Source business identifier.
          */
         coalesce(
             nullif(trim(id_field), ''),
@@ -97,7 +97,7 @@ lims_lab_results as (
 
         /*
          * performer_mfl is the health facility that
-         * requested the sample/test.
+         * requested the test or submitted the specimen.
          */
         nullif(trim(performer_mfl), '')
             as requesting_facility_mfl,
@@ -108,6 +108,9 @@ lims_lab_results as (
         nullif(trim(testing_lab_name), '')
             as testing_laboratory_name,
 
+        /*
+         * Source test attributes.
+         */
         nullif(trim(code), '')
             as test_code,
 
@@ -123,6 +126,9 @@ lims_lab_results as (
         nullif(trim(unit), '')
             as result_unit,
 
+        /*
+         * Original result values retained for reconciliation.
+         */
         nullif(trim(conclusion), '')
             as source_result,
 
@@ -155,6 +161,9 @@ standardized_results as (
     select
         *,
 
+        /*
+         * Result normalization.
+         */
         lower(
             trim(
                 coalesce(
@@ -164,6 +173,9 @@ standardized_results as (
             )
         ) as result_value_normalized,
 
+        /*
+         * Requesting-facility normalization.
+         */
         lower(
             nullif(
                 trim(requesting_facility_mfl),
@@ -171,6 +183,9 @@ standardized_results as (
             )
         ) as requesting_facility_mfl_normalized,
 
+        /*
+         * Testing-laboratory normalization.
+         */
         lower(
             nullif(
                 trim(testing_laboratory_code),
@@ -183,7 +198,38 @@ standardized_results as (
                 trim(testing_laboratory_name),
                 ''
             )
-        ) as testing_laboratory_name_normalized
+        ) as testing_laboratory_name_normalized,
+
+        /*
+         * Laboratory-test normalization.
+         */
+        lower(
+            nullif(
+                trim(test_code),
+                ''
+            )
+        ) as test_code_normalized,
+
+        lower(
+            nullif(
+                trim(test_name),
+                ''
+            )
+        ) as test_name_normalized,
+
+        lower(
+            nullif(
+                trim(test_code_text),
+                ''
+            )
+        ) as test_code_text_normalized,
+
+        lower(
+            nullif(
+                trim(component_code),
+                ''
+            )
+        ) as component_code_normalized
 
     from lims_lab_results
 
@@ -194,6 +240,9 @@ categorized_results as (
     select
         *,
 
+        /*
+         * Canonical result category.
+         */
         case
             when result_value_normalized in (
                 'positive',
@@ -230,6 +279,9 @@ categorized_results as (
 
 ),
 
+/*
+ * Requesting-facility lookup.
+ */
 requesting_facilities as (
 
     select
@@ -245,7 +297,10 @@ requesting_facilities as (
 
     from {{ ref('dim_facilitylist') }}
 
-    where nullif(trim(mfl_code::text), '') is not null
+    where nullif(
+        trim(mfl_code::text),
+        ''
+    ) is not null
 
     group by
         lower(
@@ -257,6 +312,9 @@ requesting_facilities as (
 
 ),
 
+/*
+ * Testing-laboratory lookup by code.
+ */
 laboratories_by_code as (
 
     select
@@ -272,7 +330,10 @@ laboratories_by_code as (
 
     from {{ ref('dim_laboratory') }}
 
-    where nullif(trim(laboratory_code::text), '') is not null
+    where nullif(
+        trim(laboratory_code::text),
+        ''
+    ) is not null
 
     group by
         lower(
@@ -284,6 +345,9 @@ laboratories_by_code as (
 
 ),
 
+/*
+ * Testing-laboratory fallback lookup by name.
+ */
 laboratories_by_name as (
 
     select
@@ -299,7 +363,10 @@ laboratories_by_name as (
 
     from {{ ref('dim_laboratory') }}
 
-    where nullif(trim(laboratory_name), '') is not null
+    where nullif(
+        trim(laboratory_name),
+        ''
+    ) is not null
 
     group by
         lower(
@@ -312,51 +379,246 @@ laboratories_by_name as (
 ),
 
 /*
-Future sources must return the same canonical columns.
-
-other_lab_results as (
+ * Most specific laboratory-test lookup:
+ * test code plus component code.
+ *
+ * dim_labtest uses labtest_key as its primary key.
+ */
+lab_tests_by_code_component as (
 
     select
-        ...
-)
-*/
+        lower(
+            nullif(
+                trim(test_code),
+                ''
+            )
+        ) as test_code_normalized,
 
+        lower(
+            nullif(
+                trim(component_code),
+                ''
+            )
+        ) as component_code_normalized,
+
+        min(labtest_key)
+            as lab_test_key
+
+    from {{ ref('dim_labtest') }}
+
+    where nullif(trim(test_code), '') is not null
+      and nullif(trim(component_code), '') is not null
+
+    group by
+        lower(
+            nullif(
+                trim(test_code),
+                ''
+            )
+        ),
+
+        lower(
+            nullif(
+                trim(component_code),
+                ''
+            )
+        )
+
+),
+
+/*
+ * Laboratory-test lookup by test code.
+ */
+lab_tests_by_code as (
+
+    select
+        lower(
+            nullif(
+                trim(test_code),
+                ''
+            )
+        ) as test_code_normalized,
+
+        min(labtest_key)
+            as lab_test_key
+
+    from {{ ref('dim_labtest') }}
+
+    where nullif(trim(test_code), '') is not null
+
+    group by
+        lower(
+            nullif(
+                trim(test_code),
+                ''
+            )
+        )
+
+),
+
+/*
+ * Laboratory-test fallback lookup by test name.
+ */
+lab_tests_by_name as (
+
+    select
+        lower(
+            nullif(
+                trim(test_name),
+                ''
+            )
+        ) as test_name_normalized,
+
+        min(labtest_key)
+            as lab_test_key
+
+    from {{ ref('dim_labtest') }}
+
+    where nullif(trim(test_name), '') is not null
+
+    group by
+        lower(
+            nullif(
+                trim(test_name),
+                ''
+            )
+        )
+
+),
+
+/*
+ * Final laboratory-test fallback using code_text.
+ *
+ * dim_labtest exposes this column as code_text,
+ * not test_code_text.
+ */
+lab_tests_by_code_text as (
+
+    select
+        lower(
+            nullif(
+                trim(code_text),
+                ''
+            )
+        ) as test_code_text_normalized,
+
+        min(labtest_key)
+            as lab_test_key
+
+    from {{ ref('dim_labtest') }}
+
+    where nullif(trim(code_text), '') is not null
+
+    group by
+        lower(
+            nullif(
+                trim(code_text),
+                ''
+            )
+        )
+
+),
+
+/*
+ * Future laboratory-result sources must return
+ * the same canonical columns.
+ */
 unioned_lab_results as (
 
     select *
     from categorized_results
 
-    /*
-    union all
+),
 
-    select *
-    from other_lab_results
-    */
+resolved_lab_results as (
+
+    select
+        r.*,
+
+        /*
+         * Resolve the canonical laboratory test.
+         *
+         * Priority:
+         * 1. Test code and component code
+         * 2. Test code
+         * 3. Test name
+         * 4. Code description
+         */
+        coalesce(
+            test_code_component.lab_test_key,
+            test_code.lab_test_key,
+            test_name.lab_test_key,
+            test_code_text.lab_test_key
+        ) as resolved_lab_test_key,
+
+        requesting_facility.facility_key
+            as resolved_requesting_facility_key,
+
+        /*
+         * Prefer laboratory-code matching,
+         * then fall back to laboratory name.
+         */
+        coalesce(
+            laboratory_code.laboratory_key,
+            laboratory_name.laboratory_key
+        ) as resolved_testing_laboratory_key
+
+    from unioned_lab_results r
+
+    left join requesting_facilities requesting_facility
+        on r.requesting_facility_mfl_normalized
+         = requesting_facility.mfl_code_normalized
+
+    left join laboratories_by_code laboratory_code
+        on r.testing_laboratory_code_normalized
+         = laboratory_code.laboratory_code_normalized
+
+    left join laboratories_by_name laboratory_name
+        on r.testing_laboratory_name_normalized
+         = laboratory_name.laboratory_name_normalized
+
+    left join lab_tests_by_code_component test_code_component
+        on r.test_code_normalized
+         = test_code_component.test_code_normalized
+
+       and r.component_code_normalized
+         = test_code_component.component_code_normalized
+
+    left join lab_tests_by_code test_code
+        on r.test_code_normalized
+         = test_code.test_code_normalized
+
+    left join lab_tests_by_name test_name
+        on r.test_name_normalized
+         = test_name.test_name_normalized
+
+    left join lab_tests_by_code_text test_code_text
+        on r.test_code_text_normalized
+         = test_code_text.test_code_text_normalized
 
 ),
 
 final as (
 
     select
-        {{ dbt_utils.generate_surrogate_key([
-            'r.source_system',
-            'r.source_record_id'
-        ]) }} as lab_result_key,
+        {{
+            dbt_utils.generate_surrogate_key([
+                'r.source_system',
+                'r.source_record_id'
+            ])
+        }} as lab_result_key,
 
         /*
-         * Facility that requested the test.
+         * Dimension keys.
          */
-        rf.facility_key
+        r.resolved_lab_test_key
+            as lab_test_key,
+
+        r.resolved_requesting_facility_key
             as requesting_facility_key,
 
-        /*
-         * Laboratory that performed the test.
-         * Code matching is preferred, followed by name.
-         */
-        coalesce(
-            laboratory_code.laboratory_key,
-            laboratory_name.laboratory_key
-        ) as testing_laboratory_key,
+        r.resolved_testing_laboratory_key
+            as testing_laboratory_key,
 
         coalesce(
             collection_date.date_key,
@@ -368,30 +630,55 @@ final as (
             -1
         ) as result_date_key,
 
+        /*
+         * Source metadata.
+         */
         r.source_system,
         r.source_row_id,
         r.source_record_id,
 
+        /*
+         * Subject and case linkage.
+         */
         r.subject_identifier,
         r.identifier,
         r.case_identifier,
+
+        /*
+         * Order and specimen attributes.
+         */
         r.order_identifier,
         r.specimen_identifier,
         r.specimen_type,
 
+        /*
+         * Laboratory event dates.
+         */
         r.collection_date,
         r.result_datetime,
 
+        /*
+         * Requesting facility.
+         */
         r.requesting_facility_mfl,
 
+        /*
+         * Testing laboratory.
+         */
         r.testing_laboratory_code,
         r.testing_laboratory_name,
 
+        /*
+         * Source test attributes.
+         */
         r.test_code,
         r.test_name,
         r.test_code_text,
         r.component_code,
 
+        /*
+         * Laboratory result.
+         */
         r.source_result,
         r.source_value_code,
         r.result_value,
@@ -401,31 +688,49 @@ final as (
         r.reference_range_low,
         r.reference_range_high,
 
-        1::integer as test_count,
+        /*
+         * Additive fact measure.
+         */
+        1::integer
+            as test_count,
 
+        /*
+         * Dimension-resolution flags.
+         */
+        case
+            when r.resolved_lab_test_key is not null
+                then 1
+            else 0
+        end::integer as lab_test_matched_flag,
+
+        case
+            when r.resolved_requesting_facility_key is not null
+                then 1
+            else 0
+        end::integer as requesting_facility_matched_flag,
+
+        case
+            when r.resolved_testing_laboratory_key is not null
+                then 1
+            else 0
+        end::integer as testing_laboratory_matched_flag,
+
+        /*
+         * Audit metadata.
+         */
         r.ingested_at,
         r.batch_id,
         r.source_file
 
-    from unioned_lab_results r
-
-    left join requesting_facilities rf
-        on r.requesting_facility_mfl_normalized
-         = rf.mfl_code_normalized
-
-    left join laboratories_by_code laboratory_code
-        on r.testing_laboratory_code_normalized
-         = laboratory_code.laboratory_code_normalized
-
-    left join laboratories_by_name laboratory_name
-        on r.testing_laboratory_name_normalized
-         = laboratory_name.laboratory_name_normalized
+    from resolved_lab_results r
 
     left join {{ ref('dim_date') }} collection_date
-        on r.collection_date = collection_date.full_date
+        on r.collection_date
+         = collection_date.full_date
 
     left join {{ ref('dim_date') }} result_date
-        on cast(r.result_datetime as date) = result_date.full_date
+        on cast(r.result_datetime as date)
+         = result_date.full_date
 
 )
 
